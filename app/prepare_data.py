@@ -10,7 +10,6 @@ spark = SparkSession.builder \
     .config("spark.sql.parquet.enableVectorizedReader", "true") \
     .getOrCreate()
 
-print("Reading parquet from /a.parquet and sampling 100 rows...")
 df = spark.read.parquet("/a.parquet")
 df = df.select(['id', 'title', 'text'])
 n = 100
@@ -29,9 +28,8 @@ def create_doc(row):
 
 
 df.foreach(create_doc)
-print("Finished writing txt files under data/")
+print("done writing docs")
 
-print("Running HDFS commands (mkdir, clean old /input/data, put data folder)...")
 subprocess.run(["hdfs", "dfs", "-mkdir", "-p", "/input"], check=True)
 subprocess.run(["hdfs", "dfs", "-rm", "-r", "-f", "/input/data"], check=False)
 subprocess.run(["hdfs", "dfs", "-put", "-f", "data", "/"], check=True)
@@ -57,7 +55,6 @@ def path_to_tsv(pair):
     return f"{doc_id}\t{title}\t{text}"
 
 
-print("Reading hdfs:///data with wholeTextFiles and saving one partition to hdfs:///input/data...")
 lines = sc.wholeTextFiles("hdfs:///data").map(path_to_tsv).filter(lambda x: x is not None)
 lines.coalesce(1).saveAsTextFile("hdfs:///input/data")
 print("Done.")
