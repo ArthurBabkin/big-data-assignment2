@@ -24,7 +24,8 @@ def main():
         sys.exit(1)
 
     cluster = Cluster([CASSANDRA_HOST])
-    session = cluster.connect(KEYSPACE)
+    session = cluster.connect()
+    session.set_keyspace(KEYSPACE)
 
     n_row = session.execute(
         "SELECT stat_value FROM corpus_stats WHERE stat_key = 'N'"
