@@ -2,19 +2,16 @@
 
 source .venv/bin/activate
 
-
-# Python of the driver (/app/.venv/bin/python)
-export PYSPARK_DRIVER_PYTHON=$(which python) 
-
-
+export PYSPARK_DRIVER_PYTHON=$(which python)
 unset PYSPARK_PYTHON
 
-# DOWNLOAD a.parquet or any parquet file before you run this
+echo "Uploading a.parquet to HDFS..."
+hdfs dfs -put -f a.parquet /
 
-hdfs dfs -put -f a.parquet / && \
-    spark-submit prepare_data.py && \
-    echo "Putting data to hdfs" && \
-    hdfs dfs -put data / && \
-    hdfs dfs -ls /data && \
-    hdfs dfs -ls /indexer/data && \
-    echo "done data preparation!"
+echo "Running prepare_data.py..."
+spark-submit prepare_data.py
+
+echo "Verifying HDFS /data and /input/data..."
+hdfs dfs -count /data
+hdfs dfs -count /input/data
+echo "Data preparation done."
