@@ -1,8 +1,21 @@
 #!/bin/bash
-echo "This script include commands to run mapreduce jobs using hadoop streaming to index documents"
 
-echo "Input path is :"
-echo $1
+source .venv/bin/activate
 
+INPUT_PATH="${1:-/input/data}"
 
-hdfs dfs -ls /
+echo "Creating index for: $INPUT_PATH"
+bash create_index.sh "$INPUT_PATH"
+if [ $? -ne 0 ]; then
+  echo "create_index.sh failed" >&2
+  exit 1
+fi
+
+echo "Storing index in Cassandra..."
+bash store_index.sh
+if [ $? -ne 0 ]; then
+  echo "store_index.sh failed" >&2
+  exit 1
+fi
+
+echo "Indexing complete."
