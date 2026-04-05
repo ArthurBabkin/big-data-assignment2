@@ -5,9 +5,7 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
+cd "$(dirname "$0")"
 source .venv/bin/activate
 
-export PYSPARK_DRIVER_PYTHON=$(which python)
-export PYSPARK_PYTHON=./.venv/bin/python
-
-spark-submit --master yarn --archives /app/.venv.tar.gz#.venv query.py "$1"
+spark-submit --master local[*] query.py "$1"
