@@ -1,8 +1,10 @@
 */kaggle.json
 *.parquet
+.DS_Store
+**/.DS_Store
 .venv.tar.gz
+*.tar.gz
 app/data/
-screenshots/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

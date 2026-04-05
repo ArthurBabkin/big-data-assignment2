@@ -7,7 +7,7 @@ bash start-services.sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-venv-pack -o .venv.tar.gz
+venv-pack -o .venv-packed.tar.gz
 
 bash prepare_data.sh
 
