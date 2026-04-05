@@ -18,3 +18,5 @@ bash index.sh
 bash search.sh "history of music"
 bash search.sh "war and military conflict"
 bash search.sh "science technology innovation"
+
+sleep infinity
