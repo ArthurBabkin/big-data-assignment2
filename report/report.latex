@@ -1,0 +1,236 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{verbatim}
+\usepackage{xurl}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue,
+    pdftitle={Assignment 2: Simple Search Engine using Hadoop MapReduce},
+    pdfauthor={Arthur Babkin}
+}
+
+\setstretch{1.1}
+
+\title{\textbf{Assignment 2: Simple Search Engine using Hadoop MapReduce}}
+\author{Arthur Babkin}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\noindent\textbf{Course:} Big Data \\
+\textbf{Author:} Arthur Babkin \\
+\textbf{Repository:} \url{https://github.com/ArthurBabkin/big-data-assignment2} \\
+\textbf{Dataset:} \url{https://www.kaggle.com/datasets/jjinho/wikipedia-20230701?select=a.parquet}
+
+\section{Methodology}
+
+In this assignment I built a search engine that indexes Wikipedia documents using Hadoop MapReduce, stores the index in Cassandra, and ranks query results with BM25 using PySpark RDD. Everything runs inside Docker and is orchestrated by \texttt{app.sh}.
+
+\subsection{Data Preparation}
+
+In \texttt{prepare\_data.py} I read \texttt{a.parquet} from Kaggle dataset with PySpark and sampled 1000 Wikipedia documents using a fixed seed. For each document I write a plain-text file as \texttt{<doc\_id>\_<title>.txt} into local \texttt{data/}. Then \texttt{prepare\_data.sh} uploads that folder to HDFS at \texttt{/data}.
+
+After uploading, a Spark RDD job reads all files from HDFS with \texttt{wholeTextFiles}, extracts \texttt{doc\_id} and title from each filename, and writes a tab-separated file to \texttt{/input/data} --- one partition. Each line:
+
+\begin{verbatim}
+<doc_id>\t<title>\t<text>
+\end{verbatim}
+
+This is the input for the MapReduce pipelines.
+
+\subsection{Indexing --- MapReduce}
+
+I used two Hadoop Streaming pipelines to build the inverted index.
+
+\textbf{Pipeline 1} (\texttt{mapper1.py}, \texttt{reducer1.py}) computes term frequency. The mapper tokenizes each document (lowercase, letters only) and emits \texttt{word\textbackslash tdoc\_id\textbackslash t1} for each token. It also emits a \texttt{\_\_DOCLEN\_\_} record with the document length. The reducer sums counts per \texttt{(word, doc\_id)} pair and passes \texttt{\_\_DOCLEN\_\_} lines through. Output goes to \texttt{/tmp/indexer/tf}.
+
+\textbf{Pipeline 2} (\texttt{mapper2.py}, \texttt{reducer2.py}) builds the inverted index. The mapper skips \texttt{\_\_DOCLEN\_\_} lines and emits \texttt{word\textbackslash tdoc\_id:tf}. The reducer groups by word, collects all postings, counts DF, and outputs:
+
+\begin{verbatim}
+word\tdf\tdoc_id1:tf1\tdoc_id2:tf2\t...
+\end{verbatim}
+
+Final index is at \texttt{/indexer/index}. I needed two pipelines because DF can only be counted after all TF values are aggregated across the full corpus. The vocabulary file (\texttt{/indexer/vocab}) is produced later in \texttt{store\_index.py} --- since the index RDD is already in memory at that point, I just map each line to \texttt{word\textbackslash tdf} and save it as a separate partition with no extra MapReduce job.
+
+\subsection{Index Storage --- Cassandra}
+
+In \texttt{store\_index.py} I load the HDFS data into Cassandra (\texttt{search\_engine} keyspace) with PySpark. I created four tables:
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}p{3cm}|>{\raggedright\arraybackslash}p{5.5cm}|>{\raggedright\arraybackslash}p{5cm}|}
+\hline
+\textbf{Table} & \textbf{Schema} & \textbf{Purpose} \\
+\hline
+\texttt{vocabulary} & \texttt{term TEXT PRIMARY KEY, df INT} & term document frequency \\
+\hline
+\texttt{inverted\_index} & \texttt{term TEXT, doc\_id TEXT, tf INT} & postings list \\
+\hline
+\texttt{doc\_stats} & \texttt{doc\_id TEXT PRIMARY KEY, title TEXT, length INT} & per-document info \\
+\hline
+\texttt{corpus\_stats} & \texttt{stat\_key TEXT PRIMARY KEY, stat\_value DOUBLE} & \texttt{N} and \texttt{avg\_dl} \\
+\hline
+\end{tabular}
+\end{center}
+
+Cassandra is required by the assignment. Term is used as a primary key in both \texttt{vocabulary} and \texttt{inverted\_index}, which makes postings lookups at query time fast. The connection has retry logic because Cassandra takes a few seconds to start in Docker.
+
+\subsection{Query Ranking --- BM25}
+
+In \texttt{query.py} I implemented BM25 with PySpark RDD. Given a query:
+
+\begin{enumerate}[label=\arabic*.]
+    \item Tokenize the same way as documents.
+    \item Read \texttt{N} and \texttt{avg\_dl} from \texttt{corpus\_stats}.
+    \item Broadcast \texttt{doc\_stats} (lengths and titles) to all executors.
+    \item Use \texttt{sc.parallelize(terms)} so each query term is processed as a separate RDD partition --- each fetches postings from \texttt{inverted\_index} and computes partial BM25 using:
+\end{enumerate}
+
+\[
+\text{BM25}(q, d) = \sum_{t \in q} \text{IDF}(t) \cdot \frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \left(1 - b + b \cdot \frac{dl}{avg\_dl}\right)}
+\]
+
+where $k_1 = 1.0$, $b = 0.75$, and
+\[
+\text{IDF}(t) = \log\left(\frac{N}{df}\right).
+\]
+
+\begin{enumerate}[label=\arabic*.,resume]
+    \item Sum partial scores per document with \texttt{reduceByKey}, sort, take top 10.
+\end{enumerate}
+
+The \texttt{search.sh} script submits the job to YARN in \texttt{client} mode and runs it with a single executor. Getting this to work was actually one of the most frustrating parts of the project. At first, \texttt{search.sh} used \texttt{spark-submit --master local[*]}, and that worked fine, but it did not satisfy the assignment requirement. As soon as I switched to \texttt{--master yarn}, the application often got stuck in \texttt{ACCEPTED} or \texttt{LOCALIZING} and would not start properly.
+
+I tried several different fixes, including changing executor and driver memory, sending the whole virtual environment with \texttt{--archives}, and even trying to install packages on the worker manually. Some of these changes helped a little, but none of them solved the issue consistently.
+
+What finally helped was a suggestion from a classmate who had the same M-series Mac setup and had run into a very similar problem. They told me that packing all Spark jars into a single zip file made YARN startup much more reliable. After that, I looked deeper into the issue and found that the problem was caused by two things at the same time. First, my virtual environment archive was too large, around 400 MB, because it also included \texttt{pyspark}, even though Spark was already installed on the cluster and did not need to be packaged again. Second, YARN had to download a very large number of Spark jar files separately every time a job started. On my MacBook with an M1 processor, where the cluster runs through x86 emulation, this made job startup extremely slow and unreliable.
+
+To fix this, I changed the setup so the executor receives only a small packed virtual environment through \texttt{--archives /app/.venv-packed.tar.gz\#environment}. This archive contains only the Python packages that are actually needed on the worker side, such as \texttt{cassandra-driver}, while \texttt{pyspark} is intentionally excluded because it is already provided by the cluster. I also set \texttt{spark.yarn.archive} to point to a prebuilt \texttt{spark-jars.zip} stored in HDFS. This allows YARN to localize one archive instead of downloading hundreds of individual jar files, which made startup much faster and more stable. After these changes, YARN finally started jobs normally.
+
+\subsection{Incremental Indexing (bonus)}
+
+I also implemented \texttt{add\_to\_index.sh} and \texttt{add\_to\_index.py} for adding a single new document to the existing index without rerunning the full pipeline. The script takes a local file, validates the filename format, uploads it to HDFS \texttt{/data/}, and calls \texttt{add\_to\_index.py} with the extracted \texttt{doc\_id}, title, and text.
+
+In \texttt{add\_to\_index.py} I connect to Cassandra and update all four tables:
+\begin{itemize}
+    \item \texttt{vocabulary}: for each \textbf{unique} term in the document, increment \texttt{df} by 1 (or insert with \texttt{df=1} if new)
+    \item \texttt{inverted\_index}: insert new postings
+    \item \texttt{doc\_stats}: insert the new document's length and title
+    \item \texttt{corpus\_stats}: increment \texttt{N} by 1 and recalculate \texttt{avg\_dl}
+\end{itemize}
+
+\section{Demonstration}
+
+\subsection{How to Run}
+
+Prerequisites: Docker and Docker Compose.
+
+\begin{verbatim}
+git clone https://github.com/ArthurBabkin/big-data-assignment2
+cd big-data-assignment2
+docker compose up
+\end{verbatim}
+
+\texttt{app.sh} runs automatically inside \texttt{cluster-master} and does everything: starts HDFS, YARN, sets up Python venv, packs it with \texttt{venv-pack}, prepares data, builds the index, stores it in Cassandra, and runs three sample queries on YARN.
+
+To run a custom query after everything is done:
+
+\begin{verbatim}
+docker compose exec cluster-master bash
+bash search.sh "your query"
+\end{verbatim}
+
+\subsection{Indexing Results}
+
+The screenshots below show successful indexing of 1000 documents.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/01_hdfs.png}
+    \caption{HDFS indexing result}
+\end{figure}
+
+\texttt{hdfs dfs -count /data} shows 1000 files uploaded. The screenshot also shows \texttt{/input/data/part-00000} (MapReduce input), \texttt{/tmp/indexer/tf/part-00000} (Pipeline 1 output), and \texttt{/indexer/index/part-00000} (inverted index).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/02_cassandra.png}
+    \caption{Cassandra corpus\_stats}
+\end{figure}
+
+The \texttt{corpus\_stats} table has \texttt{N = 1000.0} and \texttt{avg\_dl} --- both used at query time for BM25.
+
+\subsection{Search Query 1: ``history of music''}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/03a_search_history_start.png}
+    \caption{Query: history of music --- start}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/03b_search_history_results.png}
+    \caption{Query: history of music --- results}
+\end{figure}
+
+Top results include \textit{A Concerto Is a Conversation}, \textit{A Christmas Celebration (Celtic Woman album)}, and \textit{A Christmas Cantata (Honegger)}. The scores are relatively low because ``history'' and ``music'' appear in many documents, so their IDF values are small. Still, the results are on topic.
+
+\subsection{Search Query 2: ``war and military conflict''}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/04a_search_war_start.png}
+    \caption{Query: war and military conflict --- start}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/04b_search_war_results.png}
+    \caption{Query: war and military conflict --- results}
+\end{figure}
+
+Results include \textit{A History of the Peninsular War}, \textit{A Family at War}, \textit{A Defeated People}, \textit{A Japanese Tragedy}. Scores are noticeably higher than in query 1 --- ``military'' and ``conflict'' show up in fewer documents, so they carry more weight in BM25.
+
+\subsection{Search Query 3: ``science technology innovation''}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/05a_search_science_start.png}
+    \caption{Query: science technology innovation --- start}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{screenshots/05b_search_science_results.png}
+    \caption{Query: science technology innovation --- results}
+\end{figure}
+
+Highest BM25 scores of all three queries. \textit{A Hacker Manifesto} ranks first, which makes sense --- it's a well-known book about technology, digital networks, and information society. \textit{A Lesson in the Abuse of Information Technology} and \textit{A Boy and His Atom} also fit the query well.
+
+\subsection{Reflections}
+
+This project worked well as a compact end-to-end search engine: documents were prepared in Spark, indexed with Hadoop Streaming, stored in Cassandra, and queried with BM25 in PySpark. The ranking itself behaved as expected --- more specific queries produced more convincing results, while broader queries with common words gave weaker scores.
+
+The hardest part was not the ranking logic itself, but getting the whole system to run reliably on YARN. Local mode worked almost immediately, but moving to YARN introduced a lot of setup issues, especially around dependency distribution and job startup. In particular, the cluster was slow to start jobs because too much had to be localized at launch. A useful hint from a classmate with the same M-series Mac setup helped me narrow this down. After shrinking the Python environment and using a prebuilt Spark jar archive in HDFS, the job startup became much more stable and predictable.
+
+At the same time, the limitations of the solution are pretty clear. Tokenization is intentionally very simple: I just lowercase the text and keep sequences of Latin letters with a regex. That means there is no stemming, no lemmatization, and no stopword removal, so common words like ``the'', ``of'', or ``and'' remain in the index. The Cassandra schema is also designed more for clarity and correctness than for serious large-scale optimization. Even so, for the scope of this assignment, the implementation still covers the full workflow of a search engine: document preparation, indexing, storage, and ranked retrieval.
+
+\end{document}
