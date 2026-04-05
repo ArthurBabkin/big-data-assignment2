@@ -28,7 +28,7 @@ df = spark.read.parquet("/a.parquet")
 df = df.select(['id', 'title', 'text'])
 if existing_ids:
     df = df.filter(~col('id').isin(list(existing_ids)))
-n = 100
+n = 1000
 total = df.count()
 frac = min(1.0, 100.0 * n / total) if total else 1.0
 df = df.sample(withReplacement=False, fraction=frac, seed=42).limit(n)
