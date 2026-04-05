@@ -6,11 +6,8 @@ bash start-services.sh
 
 python3 -m venv .venv
 source .venv/bin/activate
-
 pip install -r requirements.txt
-
-scp requirements.txt cluster-slave-1:/tmp/requirements.txt
-ssh cluster-slave-1 "pip3 install -r /tmp/requirements.txt"
+venv-pack -o .venv.tar.gz
 
 bash prepare_data.sh
 

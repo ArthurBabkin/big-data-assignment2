@@ -31,6 +31,11 @@ hdfs dfs -chmod 744 /apps/spark/jars
 hdfs dfs -put /usr/local/spark/jars/* /apps/spark/jars/
 hdfs dfs -chmod +rx /apps/spark/jars/
 
+# Pack all Spark jars into a single zip for faster YARN localization
+cd /usr/local/spark/jars && zip -q /tmp/spark-jars.zip ./*.jar
+hdfs dfs -put -f /tmp/spark-jars.zip /apps/spark/spark-jars.zip
+hdfs dfs -chmod +r /apps/spark/spark-jars.zip
+
 
 # print version of Scala of Spark
 scala -version
