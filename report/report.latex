@@ -167,7 +167,10 @@ The screenshots below show successful indexing of 1000 documents.
     \caption{HDFS indexing result}
 \end{figure}
 
-\texttt{hdfs dfs -count /data} shows 1000 files uploaded. The screenshot also shows \texttt{/input/data/part-00000} (MapReduce input), \texttt{/tmp/indexer/tf/part-00000} (Pipeline 1 output), and \texttt{/indexer/index/part-00000} (inverted index).
+\path{hdfs dfs -count /data} shows 1000 files uploaded. The screenshot also shows
+\path{/input/data/part-00000} (MapReduce input),
+\path{/tmp/indexer/tf/part-00000} (Pipeline 1 output), and
+\path{/indexer/index/part-00000} (inverted index).
 
 \begin{figure}[H]
     \centering
