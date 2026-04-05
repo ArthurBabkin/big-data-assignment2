@@ -115,8 +115,11 @@ def main():
             """
         )
 
-        index_rdd = sc.textFile("/indexer/index/part-*")
+        index_rdd = sc.textFile("/indexer/index/part-*").cache()
         index_rdd.foreachPartition(insert_index_partition)
+        import subprocess
+        subprocess.run(["hdfs", "dfs", "-rm", "-r", "-f", "/indexer/vocab"], check=False)
+        index_rdd.map(lambda l: "\t".join(l.split("\t")[:2])).coalesce(1).saveAsTextFile("hdfs:///indexer/vocab")
         vocab_size = index_rdd.count()
 
         doclen_rdd = sc.textFile("/tmp/indexer/tf/part-*").filter(
